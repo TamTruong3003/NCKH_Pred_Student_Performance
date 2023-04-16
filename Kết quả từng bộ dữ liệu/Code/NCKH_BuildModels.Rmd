@@ -1,0 +1,977 @@
+---
+title: "Prediction of student achievement based on the machine learning XGBoost algorithm"
+author: "Tam Truong Thuan, My Nguyen Tra"
+date: "03-10-2023"
+output:
+  word_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+# Description: 
+Notebook này sẽ chạy từ các bước như sau:
+<br>
+    1. Nhập bộ dữ liệu đầu vào (student-mat, student-por và Sapfile1) đã được xử lý và rút trích đặc trưng từ IBM SPSS và Excel. 
+<br>
+    2. Phân tách thành tập train/test đến áp dụng kỹ thuật SMOTE vào training set.
+<br>
+    3. Chạy từng mô hình thuật toán và in ra kết quả Accuracy, Precision, Recall, F1-Score của training set và testing set. 
+<br>
+<br>    
+
+Lưu ý:
+<br>
+- Các đối tượng dự đoán trong code là target (là AVG trong bài báo cáo) với bộ dữ liệu
+student-mat và student-por, iESP (là esp trong bài báo cáo) với bộ dữ liệu Sapfile1.
+<br>
+- Nhớ Ctrl+F để thay đổi target thành iESP để thử nghiệm bộ dữ liệu Sapfile1 cũng như tránh trùng lắp ký tự trong các đoạn code.
+<br>
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```  
+
+**Load packages*
+```{r}
+# Tải các gói sẽ sử dụng / Downloading packages will be used
+#install.packages("tidyverse")
+#install.packages("dplyr") 
+#install.packages("readxl")
+#install.packages("caret") # 
+#install.packages("corrplot")
+#install.packages("devtools")
+#remotes::install_github("cran/DMwR") # Resampling
+#install.packages("RWeka") #J48
+#install.packages("C50") #C50
+#install.packages("naivebayes") # Naive Bayes
+#install.packages("e1071") # Support Vector Machines
+#install.packages("class") # K-NN
+#install.packages("ranger") # Random Forest
+#install.packages('gbm') # Gradient Boosting Machine         
+#install.packages('xgboost') # XGBoost
+#install.packages("ROCR") #In metric ROC
+
+library(tidyverse)
+library(dplyr)
+library(caret)
+library("readxl")
+library("DMwR")
+
+```
+
+##Import Datasets
+
+**Student-mat**
+```{r}
+#student_mat <- read_excel("student-mat.xlsx")
+#Dataset <- student_mat
+
+#glimpse(Dataset)
+```
+
+**Student-por**
+```{r}
+student_por <- read_excel("student-por.xlsx")
+Dataset <- student_por
+
+glimpse(Dataset)
+```
+
+**Sapfile1**    
+```{r}
+#Sapfile1 <- read_excel("Sapfile1.xlsx")
+
+#Dataset <- Sapfile1
+
+#glimpse(Dataset)
+```
+## Amount values per Class
+```{r}
+if("esp" %in% colnames(Dataset)){
+  cat("Dataset:\n")
+  print(table(Dataset$esp))
+
+  cat("\nProps per Class (by %):\n")
+  print(round(proportions(table(Dataset$esp)) * 100, 2))
+  
+} else{
+  
+  cat("Dataset:\n")
+  print(table(Dataset$G_AVG))
+  
+  cat("\nProps per Class (by %):\n")
+  print(round(proportions(table(Dataset$G_AVG)) * 100, 2))
+}
+
+```
+**Detect is NA**
+```{r}
+#Classfier Training set
+(sum(is.na(as.matrix(Dataset))))
+table(unique(Dataset$G_AVG))
+
+```
+```{r}
+#> Check Dataset Information
+library(tidyverse)
+
+##1. Summary
+summary(Dataset)
+
+# Num of observations
+nrow(Dataset)
+
+# First 10 observations
+head(Dataset)
+  
+  ##2. Check amount of NA and NaN values 
+numNaN <- sum(is.nan(as.matrix(Dataset)))
+numNaN
+  
+numNa <- sum(is.na(as.matrix(Dataset)))
+numNa
+```
+
+
+```{r}
+##3. Plot by Histogram
+
+#3.1. Feature before plotting
+# ?pivot_longer: Pivot data from wide to long
+#Hist.Dataset_long <- Dataset %>%                         
+ #                    pivot_longer(colnames(Dataset)) %>% 
+#                   as.data.frame()
+
+#3.2. Plot Histogram
+#ggplot(Hist.Dataset_long, aes(x = value)) +
+#                          geom_histogram() + 
+#                          facet_wrap(~ name, scales = "free")
+
+```
+
+```{r}
+#Trực quan hệ số tương quan giữa target và các biến độc lập khác
+#> Correlate dataset with Pearson <#
+#> 
+library(corrplot)
+
+# Split to Dependent Variable (y) and Independent Variables (x)
+Dataset.x <- Dataset[,!names(Dataset) %in% c("G_AVG")]
+Dataset.y <- Dataset[,names(Dataset) %in% c("G_AVG")]
+
+corrFeature <- round(cor(y = Dataset.x, x = Dataset.y, method="pearson"),3)
+
+#Table
+table(corrFeature)
+
+#Heatmap
+corrplot(corrFeature, addCoef.col = 'black')
+```
+
+## MIN-MAX SCALING
+```{r}
+process1 <- preProcess(as.data.frame(Dataset), method=c("range"))
+
+norm_scale_Dataset <- round(predict(process1, as.data.frame(Dataset)),2)
+
+glimpse(norm_scale_Dataset)
+```
+
+## Train/Test Spliting
+
+**Info: 66% Train / 34% Test**
+
+```{r}
+library(caret)
+set.seed(3)
+
+if ("esp" %in% colnames(norm_scale_Dataset)){
+  norm_scale_Dataset$esp <- as.factor(norm_scale_Dataset$esp)
+  trainIndex <- createDataPartition(norm_scale_Dataset$esp, p = .66, list = FALSE) #TRAIN INDEX 
+
+} else{
+  norm_scale_Dataset$G_AVG <- as.factor(norm_scale_Dataset$G_AVG)
+  trainIndex <- createDataPartition(norm_scale_Dataset$G_AVG, p = .66, list = FALSE) #TRAIN INDEX 
+
+}
+
+dataTrain = norm_scale_Dataset[trainIndex, ] 
+dataTest = norm_scale_Dataset[-trainIndex, ]
+
+```
+
+**Amount values per Class**
+
+```{r}
+if("esp" %in% colnames(norm_scale_Dataset)){
+  cat("Training set:\n")
+  print(table(dataTrain$esp))
+  
+  cat("Testing set:\n")
+  print(table(dataTest$esp))
+  
+  cat("\nProps per Class in Training set (by %):\n")
+  print(round(proportions(table(dataTrain$esp)) * 100, 2))
+  
+  cat("\nProps per Class in Testing set (by %):\n")
+  print(round(proportions(table(dataTest$esp)) * 100, 2))
+  
+} else{
+  cat("Training set:\n")
+  print(table(dataTrain$G_AVG))
+  
+  cat("Testing set:\n")
+  print(table(dataTest$G_AVG))
+  
+  cat("\nProps per Class in Training set (by %):\n")
+  print(round(proportions(table(dataTrain$G_AVG)) * 100, 2))
+  
+  cat("\nProps per Class in Testing set (by %):\n")
+  print(round(proportions(table(dataTest$G_AVG)) * 100, 2))
+
+}
+```
+## Oversampling Training set with SMOTE
+```{r setup SMOTE}
+#install.packages( "Path/To/DMwR_0.4.1.tar.gz", repos=NULL, type="source" )
+library(DMwR)
+
+set.seed(3)
+if("esp" %in% colnames(norm_scale_Dataset)){
+  dataTrain.SMOTEed <- SMOTE(esp ~ ., data = norm_scale_Dataset, k = 3, perc.over = 1900, perc.under = 300)
+} else{
+  dataTrain.SMOTEed <- SMOTE(G_AVG ~ ., data = norm_scale_Dataset, k = 3, perc.over = 3000, perc.under = 300)
+}
+
+```
+
+
+**comparative Training Set before and after oversampling**
+```{r comparative Training Set before and after oversampling}
+if("esp" %in% colnames(norm_scale_Dataset)){
+  cat("SMOTE Training set:\n")
+  print(table(dataTrain$esp))
+  
+  cat("Training set after oversampling:\n")
+  print(table(dataTrain.SMOTEed$esp))
+  
+  cat("\nProps per Class in Training set (by %):\n")
+  print(round(proportions(table(dataTrain$esp)) * 100, 2))
+  
+  cat("\nProps per Class in SMOTE Training set (by %):\n")
+  print(round(proportions(table(dataTrain.SMOTEed$esp)) * 100, 2))
+  
+} else{
+  cat("Training set:\n")
+  print(table(dataTrain$G_AVG))
+  
+  cat("Training set after oversampling:\n")
+  print(table(dataTrain.SMOTEed$G_AVG))
+  
+  cat("\nProps per Class in Training set (by %):\n")
+  print(round(proportions(table(dataTrain$G_AVG)) * 100, 2))
+  
+  cat("\nProps per Class in SMOTE Training set (by %):\n")
+  print(round(proportions(table(dataTrain.SMOTEed$G_AVG)) * 100, 2))
+
+}
+```
+\newpage 
+
+**target/independents variables sptting**
+```{r}
+main_dataTrain <- dataTrain.SMOTEed
+main_dataTest <- dataTest
+
+set.seed(3)
+flag <- 0 # AVG
+if("esp" %in% colnames(norm_scale_Dataset)){
+  main_dataTrain <- main_dataTrain %>% rename(target = esp)
+  main_dataTest <- main_dataTest %>% rename(target = esp)
+  flag <- 1
+
+  } else{
+  main_dataTrain <- main_dataTrain %>% rename(target = G_AVG)
+  main_dataTest <- main_dataTest %>% rename(target = G_AVG)
+  }
+
+main_dataTrain$target <- as.numeric(as.character(main_dataTrain$target))
+main_dataTest$target <- as.numeric(as.character(main_dataTest$target))
+
+if (flag == 0){
+main_dataTrain$target <- main_dataTrain$target %>% replace(main_dataTrain$target == 0, 1) %>% replace(main_dataTrain$target == 0.25, 2) %>% replace(main_dataTrain$target == 0.75, 4) %>% replace(main_dataTrain$target == 1, 5) %>% replace(main_dataTrain$target == 0.5, 3)
+  
+  
+main_dataTest$target <- main_dataTest$target %>% replace(main_dataTest$target == 0, 1) %>% replace(main_dataTest$target == 0.25, 2) %>% replace(main_dataTest$target == 0.75, 4) %>% replace(main_dataTest$target == 1, 5) %>% replace(main_dataTest$target == 0.5, 3)
+  
+} else{
+main_dataTrain$target <- main_dataTrain$target %>% replace(main_dataTrain$target == 0, 40) %>% replace(main_dataTrain$target == 0.25, 50) %>% replace(main_dataTrain$target == 0.75, 70) %>% replace(main_dataTrain$target == 1, 80)
+  
+main_dataTest$target <- main_dataTest$target %>% replace(main_dataTest$target == 0, 40) %>% replace(main_dataTest$target == 0.25, 50) %>% replace(main_dataTest$target == 0.75, 70) %>% replace(main_dataTest$target == 1, 80)
+
+}
+
+main_dataTrain$target <- as.factor(main_dataTrain$target)
+main_dataTest$target <- as.factor(main_dataTest$target)
+
+#colnames(main_dataTrain_x) <- NULL
+#rownames(main_dataTrain_x) <- NULL
+#colnames(main_main_dataTest_x) <- NULL
+#rownames(main_main_dataTest_x) <- NULL
+``` 
+
+## SETUP MODELS
+
+**J48**
+```{r}
+#### J48 Model #####
+library(caret)
+library(RWeka)
+
+#Model
+set.seed(3)
+model.J48 <- J48(target ~. , main_dataTrain,
+                 control = Weka_control(), na.action =  NULL)
+
+#Summary J48 model
+
+model.J48$pred.train <- predict(model.J48, main_dataTrain, type = "class")
+(acc.J48.train <- round(mean(model.J48$pred.train == main_dataTrain$target), 3) * 100)
+
+#Predict  
+model.J48$pred.test <- predict(model.J48, main_dataTest, type = "class")
+(acc.J48.test <- round(mean(model.J48$pred.test == main_dataTest$target), 3) * 100)
+
+#Check predict variable
+summary(model.J48)
+#library(pROC)
+ 
+#auc(multiclass.roc(response = main_dataTest$target, predictor = as.numeric(model.J48$pred.test)))
+
+#Confusion Matrix
+(model.J48.ConfusionMatrix <- confusionMatrix(model.J48$pred.test, main_dataTest$target))
+```
+**J48 Confusion Matrix / Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = model.J48$pred.test))
+
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+precisions[is.nan(precisions)] <- 0
+recalls <- round(diag / rowsums,3)
+recalls[is.nan(recalls)] <- 0
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+f1[is.nan(f1)] <- 0
+
+model.J48$evaluationTable <- data.frame(precisions, recalls, f1)
+model.J48$evaluationTable <- model.J48$evaluationTable %>% mutate(Model = "J48", Class = c(1,2,3,4,5))
+
+model.J48$marcoPrecision <- mean(precisions)
+model.J48$marcoRecall <- mean(recalls)
+model.J48$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.J48$marcoList <- c("Marco Precision" = model.J48$marcoPrecision, "Marco Recall" = model.J48$marcoRecall, "F1-Score" = model.J48$marcoF1)
+print(model.J48$marcoList)
+```
+**C5.0**
+```{r}
+#### C5.0 Model #####
+#install.packages("C50")
+library(C50)
+
+set.seed(3)
+#Model
+model.C50 <- C50::C5.0(as.factor(target) ~ . , main_dataTrain)
+str(main_dataTrain$target)
+#Summary C50 model
+summary(model.C50)
+main_dataTest$target <- as.factor(main_dataTest$target)
+#Predict    
+model.C50$pred.train <- predict(model.C50, newdata = main_dataTrain, type = "class")
+(acc.C50.train <- round(mean(model.C50$pred.train == main_dataTrain$target), 3) * 100)
+
+
+model.C50$pred.test <- predict(model.C50, newdata = main_dataTest, type = "class")
+(acc.C50.test <- round(mean(model.C50$pred.test == main_dataTest$target), 3) * 100)
+
+#Confusion Matrix
+(model.C50.ConfusionMatrix <- confusionMatrix(model.C50$pred.test, main_dataTest$target))
+```
+**C5.0 Confusion Matrix / Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = model.C50$pred.test))
+
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+precisions[is.nan(precisions)] <- 0
+recalls <- round(diag / rowsums,3)
+recalls[is.nan(recalls)] <- 0
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+f1[is.nan(f1)] <- 0
+
+model.C50$evaluationTable <- data.frame(precisions, recalls, f1)
+model.C50$evaluationTable <- model.C50$evaluationTable %>% mutate(Model = "C5.0", Class = c(1,2,3,4,5))
+
+model.C50$marcoPrecision <- mean(precisions)
+model.C50$marcoRecall <- mean(recalls)
+model.C50$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.C50$marcoList <- c("Marco Precision" = model.C50$marcoPrecision, "Marco Recall" = model.C50$marcoRecall, "F1-Score" = model.C50$marcoF1)
+print(model.C50$marcoList)
+```
+
+**K-NN**
+```{r}
+#### K-NN Model #####
+library(class)
+
+#Get the best k value
+
+set.seed(3)
+k_total <- round(sqrt(nrow(main_dataTrain)),0)
+k_total
+
+#Model (Using train function of caret) ### BUILD !
+trainControl.KNN <- trainControl(method = "repeatedcv",
+                                 number = 10,
+                                 repeats = 3)
+
+knn_fit <- train(target ~., data = main_dataTrain, method = "knn",
+                 trControl = trainControl.KNN,
+                 metric = "Accuracy")
+                 #tuneGrid = data.frame(k = seq(k_total - 10, k_total + 30, 3)))
+                 #tuneGrid = data.frame(k = c(k_total - 4, k_total, k_total + 4)))
+knn_fit$results
+mean(knn_fit$results$Accuracy)
+
+#Training set Accuracy
+knn_predict.train <- predict(knn_fit, main_dataTrain)
+(acc.KNN.train <- round(mean(knn_predict.train == main_dataTrain$target), 3) * 100)
+
+#Testing set accuracy
+knn_predict.test <- predict(knn_fit, main_dataTest)
+(acc.KNN.test <- round(mean(knn_predict.test == main_dataTest$target), 3) * 100)
+
+
+(cm.KNN.train <- confusionMatrix(as.factor(knn_predict.train), main_dataTrain$target))
+
+(cm.KNN.test <- confusionMatrix(as.factor(knn_predict.test), main_dataTest$target))
+
+#Confusion Matrix
+(model.KNN.ConfusionMatrix <- confusionMatrix(knn_predict.test, as.factor(main_dataTest$target)))
+
+```
+
+**K-NN Confusion Matrix / Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = knn_predict.test))
+
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+precisions[is.nan(precisions)] <- 0
+recalls <- round(diag / rowsums,3)
+recalls[is.nan(recalls)] <- 0
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+f1[is.nan(f1)] <- 0
+
+knn_fit$evaluationTable <- data.frame(precisions, recalls, f1)
+knn_fit$evaluationTable <- knn_fit$evaluationTable %>% mutate(Model = "K-NN", Class = c(1,2,3,4,5))
+
+knn_fit$marcoPrecision <- mean(precisions)
+knn_fit$marcoRecall <- mean(recalls)
+knn_fit$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+knn_fit$marcoList <- c("Marco Precision" = knn_fit$marcoPrecision, "Marco Recall" = knn_fit$marcoRecall, "F1-Score" = knn_fit$marcoF1)
+print(knn_fit$marcoList)
+```
+
+**Naive Bayes**
+```{r}
+#### Naive Bayes Model ####
+library(naivebayes) # naive_bayes function
+library(tidyverse)
+
+set.seed(3)
+model.NaiveBayes <- naive_bayes(target ~ . , main_dataTrain, laplace = 2)
+#plot(model.NaiveBayes)
+
+summary(model.NaiveBayes)
+
+model.NaiveBayes$pred.train <- predict(model.NaiveBayes, select(main_dataTrain, -target), type = "class")
+(acc.NB.train <- round(mean(model.NaiveBayes$pred.train == main_dataTrain$target), 3) * 100)
+
+model.NaiveBayes$pred.test <- predict(model.NaiveBayes, select(main_dataTest, -target), type = "class")
+(acc.NB.test <- round(mean(model.NaiveBayes$pred.test == main_dataTest$target), 3) * 100)
+
+table(model.NaiveBayes$pred.test, as.factor(main_dataTest$target))
+
+#Confusion Matrix
+(model.NaiveBayes.ConfusionMatrix <- confusionMatrix(model.NaiveBayes$pred.test, main_dataTest$target))
+```
+
+**C5.0 Confusion Matrix / Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = model.NaiveBayes$pred.test))
+
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+precisions[is.nan(precisions)] <- 0
+recalls <- round(diag / rowsums,3)
+recalls[is.nan(recalls)] <- 0
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+f1[is.nan(f1)] <- 0
+
+model.NaiveBayes$evaluationTable <- data.frame(precisions, recalls, f1)
+model.NaiveBayes$evaluationTable <- model.NaiveBayes$evaluationTable %>% mutate(Model = "Naive Bayes", Class = c(1,2,3,4,5))
+
+model.NaiveBayes$marcoPrecision <- mean(precisions)
+model.NaiveBayes$marcoRecall <- mean(recalls)
+model.NaiveBayes$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.NaiveBayes$marcoList <- c("Marco Precision" = model.NaiveBayes$marcoPrecision, "Marco Recall" = model.NaiveBayes$marcoRecall, "F1-Score" = model.NaiveBayes$marcoF1)
+print(model.NaiveBayes$marcoList)
+```
+
+```{r}
+#### SVM ####
+library("e1071")
+
+# # # Linear Kernel
+  # tune.linear_SVM <- tune.svm() #Tuning
+set.seed(3)
+model.LinearSVM <- svm(as.factor(target) ~. , main_dataTrain, kernel = "linear")
+  
+#Training Acc
+model.LinearSVM$train.pred <- predict(model.LinearSVM, main_dataTrain)
+(model.LnearSVM.train.acc <- round(mean(model.LinearSVM$train.pred == main_dataTrain$target), 3) * 100)
+  
+#Testing Acc
+model.LinearSVM$test.pred <- predict(model.LinearSVM, main_dataTest)
+  (model.LnearSVM.test.acc <- round(mean(model.LinearSVM$test.pred == main_dataTest$target), 3) * 100)
+  
+  
+# # # Polynomial Kernel
+# tune.polynomial_SVM <- tune.svm()
+  
+model.PolynomialSVM <- svm(as.factor(target) ~. , main_dataTrain, kernel = "polynomial")
+  
+#Training Acc
+model.PolynomialSVM$train.pred <- predict(model.PolynomialSVM, main_dataTrain)
+(model.PolynomialSVM.train.acc <- round(mean(model.PolynomialSVM$train.pred == main_dataTrain$target), 3) * 100)
+  
+#Testing Acc
+model.PolynomialSVM$test.pred <- predict(model.PolynomialSVM, main_dataTest)
+(model.PolynomialSVM.test.acc <- round(mean(model.PolynomialSVM$test.pred == main_dataTest$target), 3) * 100)
+  
+# # # RBF Kernel
+# tune.RBF_SVM <- tune.svm()
+  
+model.RBF_SVM <- svm(as.factor(target) ~. , main_dataTrain, kernel = "radial")
+  
+#Training Acc
+model.RBF_SVM$train.pred <- predict(model.RBF_SVM, main_dataTrain)
+(model.RBF_SVM.train.acc <- round(mean(model.RBF_SVM$train.pred == main_dataTrain$target), 3) * 100)
+  
+#Testing Acc
+model.RBF_SVM$test.pred <- predict(model.RBF_SVM, main_dataTest)
+(model.RBF_SVM.test.acc <- round(mean(model.RBF_SVM$test.pred == main_dataTest$target), 3) * 100)
+
+#Accuracy of All Types
+SVM_accuracy.train <- c(model.LnearSVM.train.acc, model.PolynomialSVM.train.acc, model.RBF_SVM.train.acc)
+names(SVM_accuracy.train) <- c("Linear", "Polynomial", "RBF")
+SVM_accuracy.train
+  
+SVM_accuracy.test <- c(model.LnearSVM.test.acc, model.PolynomialSVM.test.acc, model.RBF_SVM.test.acc)
+
+names(SVM_accuracy.test) <- c("Linear", "Polynomial", "RBF")
+SVM_accuracy.test
+```
+**Polynomial Kernel - Confusion Matrix / Marco Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = model.PolynomialSVM$test.pred))
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+recalls <- round(diag / rowsums,3)
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+model.PolynomialSVM$evaluationTable <- data.frame(precisions, recalls, f1)
+model.PolynomialSVM$evaluationTable <- model.PolynomialSVM$evaluationTable %>% mutate(Model = "Polynomial SVM", Class = c(1,2,3,4,5))
+
+model.PolynomialSVM$marcoPrecision <- mean(precisions)
+model.PolynomialSVM$marcoRecall <- mean(recalls)
+model.PolynomialSVM$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.PolynomialSVM$marcoList <- c("Marco Precision" = model.PolynomialSVM$marcoPrecision, "Marco Recall" = model.PolynomialSVM$marcoRecall, "F1-Score" = model.PolynomialSVM$marcoF1)
+print(model.PolynomialSVM$marcoList)
+```
+
+**Linear Kernel - Confusion Matrix / Marco Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = model.LinearSVM$test.pred))
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+recalls <- round(diag / rowsums,3)
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+model.LinearSVM$evaluationTable <- data.frame(precisions, recalls, f1)
+model.LinearSVM$evaluationTable <- model.LinearSVM$evaluationTable %>% mutate(Model = "Linear SVM", Class = c(1,2,3,4,5))
+
+model.LinearSVM$marcoPrecision <- mean(precisions)
+model.LinearSVM$marcoRecall <- mean(recalls)
+model.LinearSVM$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.LinearSVM$marcoList <- c("Marco Precision" = model.LinearSVM$marcoPrecision, "Marco Recall" = model.LinearSVM$marcoRecall, "F1-Score" = model.LinearSVM$marcoF1)
+print(model.LinearSVM$marcoList)
+```
+
+**RBF Kernel - Confusion Matrix / Marco Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = model.RBF_SVM$test.pred))
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+recalls <- round(diag / rowsums,3)
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+model.RBF_SVM$evaluationTable <- data.frame(precisions, recalls, f1)
+model.RBF_SVM$evaluationTable <- model.RBF_SVM$evaluationTable %>% mutate(Model = "Radial SVM", Class = c(1,2,3,4,5))
+
+model.RBF_SVM$marcoPrecision <- mean(precisions)
+model.RBF_SVM$marcoRecall <- mean(recalls)
+model.RBF_SVM$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.RBF_SVM$marcoList <- c("Marco Precision" = model.RBF_SVM$marcoPrecision, "Marco Recall" = model.RBF_SVM$marcoRecall, "F1-Score" = model.RBF_SVM$marcoF1)
+print(model.RBF_SVM$marcoList)
+```
+**Random Forest**
+```{r}
+#### Random Forest ####
+library("ranger")
+library("caret")
+set.seed(3)
+model.RF.ranger <-  train(
+                    target ~ .,
+                    data = main_dataTrain,
+                    tuneLength = 1,
+                    method = "ranger",
+                    trControl = trainControl(
+                      method = "repeatedcv", 
+                      number = 10,
+                      repeats = 3,
+                      verboseIter = F
+                    )
+)
+mean(model.RF.ranger$results$Accuracy)
+
+RF_pred.train <- predict(model.RF.ranger, main_dataTrain)
+(acc.RF.train <- round(mean(RF_pred.train == main_dataTrain$target),3) * 100)
+
+RF_pred.test <- predict(model.RF.ranger, main_dataTest)
+(acc.RF.test <- round(mean(RF_pred.test == main_dataTest$target),3) * 100)
+
+
+#Summary RF model
+summary(model.RF.ranger$finalModel)
+summary(model.RF.ranger$results$Accuracy)
+
+#plot(model.RF.ranger)
+
+#Check predict variable
+summary(model.RF.ranger$pred)
+
+#Confusion Matrix
+(model.RF.ConfusionMatrix <- confusionMatrix(RF_pred.test, as.factor(main_dataTest$target)))
+```
+**Random Forest Confusion Matrix / Marco Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = RF_pred.test))
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+precisions[is.nan(precisions)] <- 0
+recalls <- round(diag / rowsums,3)
+recalls[is.nan(recalls)] <- 0
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+f1[is.nan(f1)] <- 0
+model.RF.ranger$evaluationTable <- data.frame(precisions, recalls, f1)
+model.RF.ranger$evaluationTable <- model.RF.ranger$evaluationTable %>% mutate(Model = "Random Forest", Class = c(1,2,3,4,5))
+
+model.RF.ranger$marcoPrecision <- mean(precisions)
+model.RF.ranger$marcoRecall <- mean(recalls)
+model.RF.ranger$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.RF.ranger$marcoList <- c("Marco Precision" = model.RF.ranger$marcoPrecision, "Marco Recall" = model.RF.ranger$marcoRecall, "F1-Score" = model.RF.ranger$marcoF1)
+print(model.RF.ranger$marcoList)
+```
+
+**Gradient Boosting**
+```{r}
+#### Gradient Boosting ####
+library(gbm)
+set.seed(3)
+#https://www.rdocumentation.org/packages/gbm/versions/2.1.8.1/topics/gbm
+
+ctrl.GB <- trainControl(method = "repeatedcv", 
+                     number = 10, 
+                     repeats = 3,
+                     verboseIter = FALSE) #Cross-validation
+
+model.GBM <- train(target ~ .,
+                   data = main_dataTrain,
+                   method = "gbm",
+                   trControl = ctrl.GB,
+                   verbose = F)
+# Check model
+# plot(model.GBM)
+
+# summary(model.GBM)
+# glance(model.GBM)
+
+#Build predict
+
+#Train pred
+model.GBM$pred.train <- predict(model.GBM, main_dataTrain)
+(acc.GBM.train <- round(mean(model.GBM$pred.train == main_dataTrain$target),3) * 100)
+
+#Test pred
+model.GBM$pred.test <- predict(model.GBM,main_dataTest)
+(acc.GBM.test <- round(mean(model.GBM$pred.test == main_dataTest$target),3) * 100)
+
+# Confusion Matrix /
+(model.GBM.ConfusionMatrix <- confusionMatrix(model.GBM$pred.test, main_dataTest$target))
+
+table(model.GBM$pred.test, main_dataTest$target)
+```
+
+**Gradient Boosting Confusion Matrix / Marco Evaluation Metrics**
+
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = model.GBM$pred.test))
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+precisions[is.nan(precisions)] <- 0
+recalls <- round(diag / rowsums,3)
+recalls[is.nan(recalls)] <- 0
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+f1[is.nan(f1)] <- 0
+model.GBM$evaluationTable <- data.frame(precisions, recalls, f1)
+model.GBM$evaluationTable <- model.GBM$evaluationTable %>% mutate(Model = "Gradient Boosting", Class = c(1,2,3,4,5))
+
+model.GBM$marcoPrecision <- mean(precisions)
+model.GBM$marcoRecall <- mean(recalls)
+model.GBM$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.GBM$marcoList <- c("Marco Precision" = model.GBM$marcoPrecision, "Marco Recall" = model.GBM$marcoRecall, "F1-Score" = model.GBM$marcoF1)
+print(model.GBM$marcoList)
+```
+
+```{r}
+#### XGBoost ####
+library(tidyverse)
+library(caret)
+library(xgboost)
+
+str(main_dataTrain)
+str(main_dataTest)
+
+set.seed(3)
+#Hyperparameters
+grid_tune <- expand.grid(nrounds = c(50, 100, 150),
+                         max_depth = c(2,4,6),
+                         eta = 0.1,
+                         gamma = 0,
+                         colsample_bytree = 1,
+                         min_child_weight = 1,
+                         subsample = 1)
+
+train_ctrl <- trainControl(method = "repeatedcv", 
+                           number = 10, 
+                           repeats = 3,
+                           verboseIter = T,
+)
+
+model.XGB <- train(target ~ .,
+                   main_dataTrain,
+                   method = "xgbTree",
+                   trControl = train_ctrl,
+                   tuneGrid = grid_tune,
+                   verbose = T)
+
+#plot(model.XGB)
+
+#Train pred
+model.XGB$pred.train <- predict(model.XGB, main_dataTrain)
+(acc.XGB.train <- round(mean(model.XGB$pred.train == main_dataTrain$target),3) * 100)
+
+#Test pred
+model.XGB$pred.test <- predict(model.XGB, main_dataTest)
+(acc.XGB.test <- round(mean(model.XGB$pred.test == main_dataTest$target),3) * 100)
+
+#Confusion Matrix
+(model.XGB.ConfusionMatrix <- confusionMatrix(model.XGB$pred.test, main_dataTest$target))
+```
+
+**XGBoost Confusion Matrix / Marco Evaluation Metrics**
+```{r}
+set.seed(3)
+CM = as.matrix(table(Actual = main_dataTest$target, Predicted = model.XGB$pred.test))
+cat("\nConfusion Matrix:\n")
+print(CM)
+
+totalInstances <- sum(CM)
+diag = diag(CM) # number of correctly classified instances per class 
+rowsums = apply(CM, 1, sum) # number of instances per class
+colsums = apply(CM, 2, sum) # number of predictions per class
+
+precisions <- round(diag / colsums,3)
+precisions[is.nan(precisions)] <- 0
+recalls <- round(diag / rowsums,3)
+recalls[is.nan(recalls)] <- 0
+f1 = round(2 * precisions * recalls / (precisions + recalls),3)
+f1[is.nan(f1)] <- 0
+model.XGB$evaluationTable <- data.frame(precisions, recalls, f1)
+model.XGB$evaluationTable <- model.XGB$evaluationTable %>% mutate(Model = "XGBoost", Class = c(1,2,3,4,5))
+
+model.XGB$marcoPrecision <- mean(precisions)
+model.XGB$marcoRecall <- mean(recalls)
+model.XGB$marcoF1 <- mean(f1)
+cat("\nEvaluation Metrics:\n")
+model.XGB$marcoList <- c("Marco Precision" = model.XGB$marcoPrecision, "Marco Recall" = model.XGB$marcoRecall, "F1-Score" = model.XGB$marcoF1)
+print(model.XGB$marcoList)
+```
+
+## Tổng hợp accuracy ##
+
+```{r}
+Train_Accuracy <- c(acc.J48.train, acc.C50.train, acc.KNN.train, acc.NB.train, SVM_accuracy.train, acc.RF.train, acc.GBM.train, acc.XGB.train)
+names(Train_Accuracy) <- c("J48","C50","KNN","NB",names(SVM_accuracy.train),"RF", "GBM","XGBoost")
+
+Test_Accuracy <- c(acc.J48.test, acc.C50.test, acc.KNN.test, acc.NB.test, SVM_accuracy.test, acc.RF.test, acc.GBM.test, acc.XGB.test)
+names(Test_Accuracy) <- c("J48","C50","KNN","NB",names(SVM_accuracy.test),"RF", "GBM","XGBoost")
+
+
+cat("Training set accruacy:\n")
+Train_Accuracy
+
+cat("Testing set accruacy:\n")
+Test_Accuracy
+
+```
+
+## Evaluation Metrics ##
+```{r}
+marcoPrecision <- c(model.J48$marcoPrecision, model.C50$marcoPrecision, knn_fit$marcoPrecision, model.NaiveBayes$marcoPrecision, model.LinearSVM$marcoPrecision, model.PolynomialSVM$marcoPrecision, model.RBF_SVM$marcoPrecision, model.RF.ranger$marcoPrecision, model.GBM$marcoPrecision, model.XGB$marcoPrecision)
+
+names(marcoPrecision) <- c("J48","C50","KNN","NB",names(SVM_accuracy.train),"RF", "GBM","XGBoost")
+
+cat("Marco Precision of all models:\n")
+print(marcoPrecision)
+
+marcoRecall <- c(model.J48$marcoRecall, model.C50$marcoRecall, knn_fit$marcoRecall, model.NaiveBayes$marcoRecall, model.LinearSVM$marcoRecall, model.PolynomialSVM$marcoRecall, model.RBF_SVM$marcoRecall, model.RF.ranger$marcoRecall, model.GBM$marcoRecall, model.XGB$marcoRecall)
+
+names(marcoRecall) <- names(marcoPrecision)
+
+cat("Marco Recall of all models:\n")
+print(marcoRecall)
+
+marcoF1 <- c(model.J48$marcoF1, model.C50$marcoF1, knn_fit$marcoF1, model.NaiveBayes$marcoF1, model.LinearSVM$marcoF1, model.PolynomialSVM$marcoF1, model.RBF_SVM$marcoF1, model.RF.ranger$marcoF1, model.GBM$marcoF1, model.XGB$marcoF1)
+
+names(marcoF1) <- names(marcoPrecision)
+
+cat("Marco F1-Score of all models:\n")
+print(marcoF1)
+
+```
+
+```{r}
+eT <- bind_rows(model.J48$evaluationTable, model.C50$evaluationTable, knn_fit$evaluationTable, model.NaiveBayes$evaluationTable, model.LinearSVM$evaluationTable, model.PolynomialSVM$evaluationTable, model.RBF_SVM$evaluationTable, model.RF.ranger$evaluationTable, model.GBM$evaluationTable, model.XGB$evaluationTable)
+rownames(eT) <- NULL
+
+(eT)
+```
+
+**Visualize Precisions**
+```{r}
+library(ggplot2)
+ggplot(eT %>% arrange(Model, Class), aes(x = Class, y = precisions, color = Model, linetype = Model)) + geom_line(position = position_jitter(width = 0.05, height = 0.05, seed = 1)) + geom_point(position = position_jitter(width = 0.05, height = 0.05, seed = 1)) + labs(title = "Precision of models", x = "Class", y = "Precision")
+```
+
+**Visualize Recalls**
+```{r}
+library(ggplot2)
+ggplot(eT %>% arrange(Model, Class), aes(x = Class, y = recalls, color = Model, linetype = Model)) + geom_line(position = position_jitter(width = 0.05, height = 0.05, seed = 1)) + geom_point(position = position_jitter(width = 0.05, height = 0.05, seed = 1)) + labs(title = "Recall of models", x = "Class", y = "Recall")
+
+```
+
+**Visualize F1**
+```{r}
+library(ggplot2)
+ggplot(eT %>% arrange(Model, Class), aes(x = Class, y = f1, color = Model, linetype = Model)) + geom_line(position = position_jitter(width = 0.05, height = 0.05, seed = 1)) + geom_point(position = position_jitter(width = 0.05, height = 0.05, seed = 1)) + labs(title = "F1-Score of models", x = "Class", y = "F1-Score")
+```
